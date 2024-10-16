@@ -1,2 +1,2 @@
 # Testing-Strategies-for-stock-picking
-Masters Project
+This project focuses on developing and evaluating three stock-picking strategies—Big Match, Moving Average, and Japanese Candlestick Patterns—using historical stock market data. The aim is to determine the financial performance of these strategies through backtesting, analyzing cumulative returns, Sharpe ratio, and other metrics. The project utilizes the Yahoo Finance API for data retrieval, and Python for strategy implementation, backtesting, and performance visualization. The outcome will provide insights into the strengths and weaknesses of each strategy in different market conditions.
