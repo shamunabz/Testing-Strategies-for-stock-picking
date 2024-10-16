@@ -1,0 +1,151 @@
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from talib import SMA, CDLENGULFING, CDLHAMMER, CDLMORNINGSTAR, CDLSHOOTINGSTAR
+import logging
+
+
+class StockPickingStrategies:
+    def __init__(self, tickers, start_date, end_date):
+        self.tickers = tickers
+        self.start_date = start_date
+        self.end_date = end_date
+        self.all_results = {}  # Dictionary to store results for each stock
+
+    def fetch_and_clean_data(self, ticker):
+        df = yf.download(ticker, start=self.start_date, end=self.end_date)
+        df = df.dropna()
+        df = df[df['Volume'] > 0]
+        return df
+
+    def big_match_strategy(self, epsilon, target, investment_threshold):
+        np.random.seed()  # Ensuring randomness
+        logging.info(f"Running Big Match with epsilon={epsilon}, target={target}, threshold={investment_threshold}")
+        portfolio_value = [1]
+        S = 0
+
+        # Normalize and scale the returns
+        adjusted_returns = self.returns - target
+        max_change = max(adjusted_returns.abs().max(), 1e-5)
+        scaled_returns = adjusted_returns / max_change
+
+        for i in range(1, len(self.returns)):
+            S += scaled_returns.iloc[i]
+            investment_value = epsilon**2 * (1 - epsilon)**(-S)
+            logging.info(f"Step {i}: S={S}, investment_value={investment_value}")
+
+            # Generate a random number and compare with investment value
+            random_decision = np.random.rand()
+            if investment_value > random_decision:
+                portfolio_value.append(portfolio_value[-1] * (1 + self.returns.iloc[i]) * (1 + investment_value))
+                S = 0
+            else:
+                portfolio_value.append(portfolio_value[-1] * (1 + self.returns.iloc[i]))
+
+        return pd.Series(portfolio_value, index=self.returns.index)
+
+    def moving_average_strategy(self, ma_period, allocation_percentage):
+        logging.info(f"Running Moving Average with ma_period={ma_period}, allocation_percentage={allocation_percentage}")
+        portfolio_value = [1]
+        sma = SMA(self.prices, timeperiod=ma_period)
+
+        for i in range(1, len(self.returns)):
+            if i >= ma_period:
+                if self.prices.iloc[i] > sma.iloc[i] and self.prices.iloc[i - 1] <= sma.iloc[i - 1]:  # Cross above
+                    portfolio_value.append(portfolio_value[-1] * (1 + self.returns.iloc[i]) * (1 + allocation_percentage))
+                elif self.prices.iloc[i] < sma.iloc[i] and self.prices.iloc[i - 1] >= sma.iloc[i - 1]:  # Cross below
+                    portfolio_value.append(portfolio_value[-1] * (1 + self.returns.iloc[i]) * (1 - allocation_percentage))
+                else:
+                    portfolio_value.append(portfolio_value[-1] * (1 + self.returns.iloc[i]))
+            else:
+                portfolio_value.append(portfolio_value[-1] * (1 + self.returns.iloc[i]))
+
+        return pd.Series(portfolio_value, index=self.returns.index)
+
+    def candlestick_strategy(self, allocation_percentage):
+        logging.info(f"Running Candlestick with allocation_percentage={allocation_percentage}")
+        portfolio_value = [1]
+        engulfing = CDLENGULFING(self.stock_data['Open'], self.stock_data['High'], self.stock_data['Low'], self.stock_data['Close'])
+        hammer = CDLHAMMER(self.stock_data['Open'], self.stock_data['High'], self.stock_data['Low'], self.stock_data['Close'])
+        morning_star = CDLMORNINGSTAR(self.stock_data['Open'], self.stock_data['High'], self.stock_data['Low'], self.stock_data['Close'])
+        shooting_star = CDLSHOOTINGSTAR(self.stock_data['Open'], self.stock_data['High'], self.stock_data['Low'], self.stock_data['Close'])
+
+        for i in range(1, len(self.returns)):
+            if engulfing.iloc[i] == 100 or hammer.iloc[i] == 100 or morning_star.iloc[i] == 100:
+                portfolio_value.append(portfolio_value[-1] * (1 + self.returns.iloc[i]) * (1 + allocation_percentage))
+            elif engulfing.iloc[i] == -100 or shooting_star.iloc[i] == -100:
+                portfolio_value.append(portfolio_value[-1] * (1 + self.returns.iloc[i]) * (1 - allocation_percentage))
+            else:
+                portfolio_value.append(portfolio_value[-1] * (1 + self.returns.iloc[i]))
+
+        return pd.Series(portfolio_value, index=self.returns.index)
+
+    def run_strategies(self, tickers, big_match_params, ma_params, candle_params):
+        for ticker in tickers:
+            self.stock_data = self.fetch_and_clean_data(ticker)
+            self.prices = self.stock_data['Close']
+            self.returns = self.prices.pct_change().dropna()
+
+            big_match = self.big_match_strategy(**big_match_params)
+            moving_average = self.moving_average_strategy(**ma_params)
+            candlestick = self.candlestick_strategy(**candle_params)
+
+            self.all_results[ticker] = {
+                'Big Match': big_match,
+                'Moving Average': moving_average,
+                'Candlestick': candlestick
+            }
+
+    def calculate_metrics(self, returns):
+        sharpe_ratio = np.nan if returns.std() == 0 else returns.mean() / returns.std() * np.sqrt(252)
+        metrics = {
+            'Annualized Return': ((1 + returns.mean()) ** 252) - 1,
+            'Annualized Volatility': returns.std() * np.sqrt(252),
+            'Sharpe Ratio': sharpe_ratio,
+            'Max Drawdown': (1 - returns / returns.cummax()).max(),
+            'Win Rate': (returns > 0).mean(),
+        }
+        return pd.Series(metrics)
+
+    def get_performance_metrics(self):
+        metrics = {}
+        for ticker, results in self.all_results.items():
+            metrics[ticker] = pd.DataFrame({
+                'Big Match': self.calculate_metrics(results['Big Match'].pct_change().dropna()),
+                'Moving Average': self.calculate_metrics(results['Moving Average'].pct_change().dropna()),
+                'Candlestick': self.calculate_metrics(results['Candlestick'].pct_change().dropna())
+            }).T
+        return metrics
+
+    def plot_results(self):
+        for ticker, results in self.all_results.items():
+            plt.figure(figsize=(14, 7))
+            plt.plot(results['Big Match'].index, results['Big Match'], label='Big Match')
+            plt.plot(results['Moving Average'].index, results['Moving Average'], label='Moving Average')
+            plt.plot(results['Candlestick'].index, results['Candlestick'], label='Candlestick')
+            plt.title(f'Portfolio Value Comparison for {ticker}')
+            plt.xlabel('Duration')
+            plt.ylabel('Portfolio Value')
+            plt.legend()
+            plt.show()
+
+# Usage
+tickers = ['NVDA', 'AAPL', 'LYG']  # Example list of stocks
+start_date ='2022-01-01'
+end_date = '2024-08-01'
+
+# Parameters
+strategies = StockPickingStrategies(tickers, start_date, end_date)
+strategies.run_strategies(
+    tickers=tickers,
+    big_match_params={'epsilon': 0.01, 'target': 0.01, 'investment_threshold': 0.01}, #Conservative Setting
+    ma_params={'ma_period': 100 , 'allocation_percentage': 0.02}, #Medium-Term Setting
+    candle_params={'allocation_percentage': 0.01} #Conservative Setting
+)
+strategies.plot_results()
+performance_metrics = strategies.get_performance_metrics()
+
+# Print the metrics for each stock
+for ticker, metrics in performance_metrics.items():
+    print(f"Performance Metrics for {ticker}:\n{metrics}\n")
